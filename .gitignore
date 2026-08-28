@@ -1,0 +1,39 @@
+# sbt and Scala build artifacts
+target/
+project/target/
+project/project/
+*.class
+
+# Scala and IDE tooling
+.bsp/
+.bloop/
+.metals/
+.scala-build/
+.idea/
+.vscode/
+*.iml
+
+# Generated task outputs and runtime logs
+*.log
+
+# Spark local runtime files
+spark-warehouse/
+metastore_db/
+derby.log
+.sparkStaging/
+
+# Hadoop and local filesystem checksum files
+*.crc
+.*.crc
+
+# Environment-specific files
+.env
+.env.*
+!.env.example
+
+# Windows alternate data streams copied into WSL/Linux
+*:Zone.Identifier
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
