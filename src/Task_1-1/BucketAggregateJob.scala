@@ -17,19 +17,13 @@ import scala.util.Try
 
 /**
   * Job 2: map bought orders to sliding-window buckets and aggregate each (state, window_date, size) group
-  * Intermediate output columns are tab-separated: state, window_date, size,
-  * window_length, purchase_count, amount_count, sum_amount,
-  * sum_amount_squared, population_variance
+  * Intermediate output columns are tab-separated: state, window_date, size, window_length, purchase_count, amount_count, sum_amount, sum_amount_squared, population_variance
   */
 object BucketAggregateJob {
   val Description = "Map bought orders to sliding-window buckets and aggregate"
   private val ColumnSeparator = "\t"
   private val CounterGroup = "Task11"
 
-  /**
-    * Mapper setup loads Job 1's state counts from Distributed Cache
-    * For a bought order on date p, map emits one summary into p+1 through p+w
-    */
   class BucketMapper
       extends Mapper[LongWritable, Text, Text, AmountSummaryWritable] {
     private val stateWindows = mutable.HashMap.empty[String, Int]
@@ -68,17 +62,10 @@ object BucketAggregateJob {
             }
 
             if (order.amount.isEmpty) {
-              context
-                .getCounter(CounterGroup, "BOUGHT_ORDERS_WITHOUT_AMOUNT")
-                .increment(1L)
+              context.getCounter(CounterGroup, "BOUGHT_ORDERS_WITHOUT_AMOUNT").increment(1L)
             }
 
-            outputSummary.set(
-              purchaseCount = 1L,
-              amountCount = amountCount,
-              sumAmount = sumAmount,
-              sumAmountSquared = sumAmountSquared
-            )
+            outputSummary.set(purchaseCount = 1L, amountCount = amountCount, sumAmount = sumAmount, sumAmountSquared = sumAmountSquared)
             var offset = 1
             while (offset <= windowLength) {
               val windowDate = order.purchaseDate.plusDays(offset.toLong)
@@ -140,26 +127,10 @@ object BucketAggregateJob {
         sumAmountSquared += value.sumAmountSquared
       }
 
-      val summary = AmountSummary(
-        purchaseCount,
-        amountCount,
-        sumAmount,
-        sumAmountSquared
-      )
-      val variance = summary.populationVariance
-        .map(java.lang.Double.toString)
-        .getOrElse("")
+      val summary = AmountSummary(purchaseCount, amountCount, sumAmount, sumAmountSquared)
+      val variance = summary.populationVariance.map(java.lang.Double.toString).getOrElse("")
 
-      outputLine.set(
-        Seq(
-          key.toString,
-          purchaseCount.toString,
-          amountCount.toString,
-          java.lang.Double.toString(sumAmount),
-          java.lang.Double.toString(sumAmountSquared),
-          variance
-        ).mkString(ColumnSeparator)
-      )
+      outputLine.set(Seq(key.toString, purchaseCount.toString, amountCount.toString, java.lang.Double.toString(sumAmount), java.lang.Double.toString(sumAmountSquared), variance).mkString(ColumnSeparator))
       context.write(NullWritable.get(), outputLine)
     }
   }

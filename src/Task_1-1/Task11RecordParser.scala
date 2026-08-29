@@ -14,9 +14,7 @@ object Task11RecordParser {
         val status = fields(Task11Config.StatusColumn).trim.toLowerCase
         val state = fields(Task11Config.StateColumn).trim
         val size = fields(Task11Config.SizeColumn).trim
-        val amount =
-          Try(fields(Task11Config.AmountColumn).trim.toDouble).toOption
-            .filter(value => java.lang.Double.isFinite(value))
+        val amount = Try(fields(Task11Config.AmountColumn).trim.toDouble).toOption.filter(value => java.lang.Double.isFinite(value))
 
         for {
           quantity <- Try(fields(Task11Config.QuantityColumn).trim.toLong).toOption

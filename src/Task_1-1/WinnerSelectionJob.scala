@@ -13,8 +13,7 @@ import scala.util.Try
   * Job 3: select one winning size for each (state, window_date)
   * Tie-breaking order:
   *   1. highest purchase count
-  *   2. lowest defined population variance; a defined variance ranks before
-  *      an undefined variance
+  *   2. lowest defined population variance; a defined variance ranks before an undefined variance
   *   3. lexicographically smallest size when variance does not decide the tie
   */
 object WinnerSelectionJob {
@@ -22,20 +21,13 @@ object WinnerSelectionJob {
   private val ColumnSeparator = "\t"
   private val CounterGroup = "Task11"
 
-  private final case class Candidate(
-      size: String,
-      windowLength: Int,
-      purchaseCount: Long,
-      populationVariance: Option[Double]
-  )
+  private final case class Candidate(size: String, windowLength: Int, purchaseCount: Long, populationVariance: Option[Double])
 
   private def parseVariance(value: String): Option[Option[Double]] = {
     val trimmed = value.trim
     if (trimmed.isEmpty) Some(None)
     else {
-      Try(trimmed.toDouble).toOption
-        .filter(value => java.lang.Double.isFinite(value))
-        .map(Some(_))
+      Try(trimmed.toDouble).toOption.filter(value => java.lang.Double.isFinite(value)).map(Some(_))
     }
   }
 
@@ -60,14 +52,7 @@ object WinnerSelectionJob {
         parsed match {
           case Some((windowLength, purchaseCount, variance)) =>
             outputKey.set(Seq(state, windowDate).mkString(ColumnSeparator))
-            outputValue.set(
-              Seq(
-                size,
-                windowLength.toString,
-                purchaseCount.toString,
-                variance.map(java.lang.Double.toString).getOrElse("")
-              ).mkString(ColumnSeparator)
-            )
+            outputValue.set(Seq(size, windowLength.toString, purchaseCount.toString, variance.map(java.lang.Double.toString).getOrElse("")).mkString(ColumnSeparator))
             context.write(outputKey, outputValue)
 
           case None =>
@@ -124,18 +109,7 @@ object WinnerSelectionJob {
       winner.foreach { selected =>
         val keyColumns = key.toString.split(ColumnSeparator, 2)
         if (keyColumns.length == 2) {
-          outputLine.set(
-            CsvParser.formatRow(
-              Seq(
-                keyColumns(0),
-                keyColumns(1),
-                selected.size,
-                selected.purchaseCount.toString,
-                selected.populationVariance.map(java.lang.Double.toString).getOrElse(""),
-                selected.windowLength.toString
-              )
-            )
-          )
+          outputLine.set(CsvParser.formatRow(Seq(keyColumns(0), keyColumns(1), selected.size, selected.purchaseCount.toString, selected.populationVariance.map(java.lang.Double.toString).getOrElse(""), selected.windowLength.toString)))
           context.write(NullWritable.get(), outputLine)
           context.getCounter(CounterGroup, "WINNERS_SELECTED").increment(1L)
         }

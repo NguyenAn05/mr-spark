@@ -69,9 +69,7 @@ object Task11Driver {
     val input = args(0)
     val localOutput = args(1)
     val userName = System.getProperty("user.name")
-    val workDirectory =
-      if (args.length == 3) args(2).stripSuffix("/")
-      else s"/user/$userName/lab03/task11/run-${System.currentTimeMillis()}"
+    val workDirectory = if (args.length == 3) args(2).stripSuffix("/") else s"/user/$userName/lab03/task11/run-${System.currentTimeMillis()}"
 
     val stateCountOutput = s"$workDirectory/job1-state-count"
     val bucketOutput = s"$workDirectory/job2-bucket-aggregate"

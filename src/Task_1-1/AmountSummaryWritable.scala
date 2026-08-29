@@ -14,12 +14,7 @@ final class AmountSummaryWritable() extends Writable {
   def sumAmount: Double = currentSumAmount
   def sumAmountSquared: Double = currentSumAmountSquared
 
-  def set(
-      purchaseCount: Long,
-      amountCount: Long,
-      sumAmount: Double,
-      sumAmountSquared: Double
-  ): Unit = {
+  def set(purchaseCount: Long, amountCount: Long, sumAmount: Double, sumAmountSquared: Double): Unit = {
     currentPurchaseCount = purchaseCount
     currentAmountCount = amountCount
     currentSumAmount = sumAmount

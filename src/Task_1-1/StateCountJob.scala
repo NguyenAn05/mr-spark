@@ -24,9 +24,7 @@ object StateCountJob {
     override def map(key: LongWritable, value: Text, context: Mapper[LongWritable, Text, Text, LongWritable]#Context): Unit = {
       Task11RecordParser.parseBought(value.toString).foreach { order =>
         if (order.amount.isEmpty) {
-          context
-            .getCounter(CounterGroup, "BOUGHT_ORDERS_WITHOUT_AMOUNT")
-            .increment(1L)
+          context.getCounter(CounterGroup, "BOUGHT_ORDERS_WITHOUT_AMOUNT").increment(1L)
         }
         outputState.set(order.state)
         context.write(outputState, one)
