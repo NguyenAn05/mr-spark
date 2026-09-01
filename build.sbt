@@ -6,6 +6,7 @@ lazy val root = (project in file("."))
   .settings(
     name := "lab03-mr-spark",
     Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "Task_1-1",
+    Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "Task_1-2",
     Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "Task_2-1",
     Compile / run / fork := true,
     Compile / console / scalacOptions --= Seq("-Xfatal-warnings"),
