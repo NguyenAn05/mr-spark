@@ -1,8 +1,9 @@
 # Lab 03 — Advanced MapReduce and Spark Structured APIs
 
-This repository contains Scala implementations for two problems from the Introduction to Big Data Analysis lab:
+This repository contains Scala implementations for three problems from the Introduction to Big Data Analysis lab:
 
 - **Task 1-1:** a dynamic-length sliding-window computation implemented with Hadoop MapReduce.
+- **Task 1-2:** a conditionally filtered median aggregation implemented with Hadoop Secondary Sort.
 - **Task 2-1:** a city-level cancellation-percentage query implemented exclusively with Spark's DataFrame API.
 
 The implementations use Scala 2.12.18, Hadoop 3.5.0, Spark 3.5.9, Java 17, and sbt.
@@ -22,9 +23,11 @@ mr-spark/
 │   ├── Lab 3 - MR-Spark.pdf
 │   └── task_ideas/
 │       ├── Task_1-1.md
+│       ├── Task_1-2.md
 │       └── Task_2-1.md
 ├── src/
 │   ├── Task_1-1/
+│   ├── Task_1-2/
 │   └── Task_2-1/
 └── outputs/
 ```
@@ -38,6 +41,15 @@ Task 1-1 uses three Hadoop MapReduce jobs:
 1. Count bought orders by state and derive a 5-day or 10-day window.
 2. Map each bought record into its future window buckets and aggregate by `(state, window_date, size)`.
 3. Select the winning size by purchase count, population variance, and lexicographic order.
+
+The final result is exported as one local CSV file.
+
+### Task 1-2
+
+Task 1-2 uses two Hadoop MapReduce jobs with Hadoop Secondary Sort:
+
+1. Count distinct SKUs (variety) for each style and filter out styles that do not have an "XXL" size sold.
+2. Collect the variety counts for each `(month, state)`, sort them, and compute the median.
 
 The final result is exported as one local CSV file.
 
@@ -269,7 +281,7 @@ target/out/jvm/scala-2.12.18/lab03-mr-spark/
 lab03-mr-spark-assembly-0.1.0-SNAPSHOT.jar
 ```
 
-The warning about multiple main classes is expected because Task 1-1 and Task 2-1 have different entry points. Each run command explicitly supplies the required main class.
+The warning about multiple main classes is expected because Task 1-1, Task 1-2, and Task 2-1 have different entry points. Each run command explicitly supplies the required main class.
 
 Set reusable paths after building:
 
@@ -318,6 +330,38 @@ Expected output filename:
 
 ```text
 outputs/Task_1-1.csv
+```
+
+## Run Task 1-2
+
+Task 1-2 runs on Hadoop MapReduce through YARN and reads its input from HDFS. Ensure the CSV is uploaded to HDFS (refer to Task 1-1, step 1).
+
+### Run the complete two-job pipeline
+
+```bash
+TASK12_WORK="/user/$USER/lab03/task12/run-01"
+
+hadoop jar "$JAR_PATH" \
+  task12.Task12Driver \
+  "/user/$USER/lab03/input/asr.csv" \
+  "./outputs/Task_1-2.csv" \
+  "$TASK12_WORK"
+```
+
+Both `TASK12_WORK` and the local output file must not already exist. Use a new work path, such as `run-02`, when repeating the task, and move or rename the previous local output if it must be preserved.
+
+Inspect the result:
+
+```bash
+wc -l "./outputs/Task_1-2.csv"
+head -n 20 "./outputs/Task_1-2.csv"
+hdfs dfs -ls -R "$TASK12_WORK"
+```
+
+Expected output filename:
+
+```text
+outputs/Task_1-2.csv
 ```
 
 ## Run Task 2-1
@@ -380,6 +424,7 @@ The completed local run produced:
 | Task                        | Result                                              |
 | --------------------------- | --------------------------------------------------- |
 | Task 1-1                    | 4,584 result rows plus one CSV header               |
+| Task 1-2                    | 128 result rows plus one CSV header                 |
 | Task 2-1                    | 1,639 city rows in one Parquet file                 |
 | Task 2-1 physical joins     | Three`BroadcastHashJoin` operators                |
 | Task 2-1 Exchange operators | Six shuffle exchanges and three broadcast exchanges |
@@ -392,4 +437,5 @@ Task 2-1 returns zero qualifying orders for the provided dataset because all Can
 Detailed design and execution analysis are available in:
 
 - `docs/task_ideas/Task_1-1.md`
+- `docs/task_ideas/Task_1-2.md`
 - `docs/task_ideas/Task_2-1.md`
