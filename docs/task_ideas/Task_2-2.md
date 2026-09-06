@@ -1,298 +1,254 @@
-# Bài 2-2 - Spark DataFrame: P80/P90 động theo SKU-tháng
+# Task 2-2 - Dynamic Promotion-Count Percentiles by SKU-Month
 
-> Mục đích của tài liệu này là giải thích đề và đưa ra lộ trình triển khai. Đây **không** phải code nộp bài; bạn nên tự hiện thực theo các bước bên dưới.
+## 1. Problem statement
 
-## 1. Đề bài thực sự yêu cầu gì?
+For every `(month, SKU)` group, this task calculates the population standard deviation of order amounts after retaining orders whose promotion count is at or above a dynamic percentile threshold. Two thresholds are required for every group:
 
-Với **mỗi cặp `(SKU, tháng)`**, cần làm đồng thời hai phép tính: P80 và P90.
+- **P80** (`p = 0.8`)
+- **P90** (`p = 0.9`)
 
-1. Đếm số mã khuyến mãi của **mỗi dòng đơn hàng**. Phải tính tất cả mã trong `promotion-ids`, bao gồm mã Amazon. Ô trống có số mã bằng `0`.
-2. Trong từng nhóm `(SKU, tháng)`, tính ngưỡng percentile động cho số mã đó: P80 và P90.
-3. Với từng mốc, chỉ giữ các đơn có `promotion_count >= threshold`.
-4. Trên tập đơn còn lại, tính **population standard deviation** của `Amount`: dùng `stddev_pop`, không dùng `stddev` hay `stddev_samp`.
-5. Nếu sau khi lọc có ít hơn 2 đơn, độ lệch chuẩn phải bằng `0.0`.
+The task must be implemented twice:
 
-Đề bắt buộc có cả hai cách tính percentile:
+1. Spark's built-in `percentile_approx` aggregate.
+2. A self-implemented exact percentile using only Spark DataFrame/Dataset operations.
 
-- Spark `percentile_approx` hoặc `approx_percentile`.
-- Cách **exact do nhóm tự hiện thực** chỉ bằng DataFrame/Dataset API.
+Promotion counts include every identifier in `promotion-ids`, including Amazon-issued promotions. The final output is one local Parquet file containing results for both methods.
 
-Không dùng `spark.sql("...")` hoặc chuỗi SQL cho lời giải chính.
+## 2. Query interpretation
 
-## 2. Những điều dễ hiểu sai
+### 2.1. Record granularity and promotion count
 
-### 2.1. Percentile là động, không phải một số chung cho cả dữ liệu
-
-Không được tính một P80/P90 cho toàn file rồi áp cho mọi SKU. Mỗi nhóm `(SKU, tháng)` có phân phối số promotion riêng và phải có threshold riêng.
-
-Ví dụ một nhóm có số mã:
+Each CSV row is treated as one order record and `index` is used as its unique `row_id`. The `promotion-ids` field is parsed as a comma-separated list:
 
 ```text
-0, 0, 1, 1, 2, 2, 2, 3, 5, 9
+null or "" -> promotion_count = 0
+"A,B"      -> promotion_count = 2
 ```
 
-thì P90 có thể là `5` với nearest-rank/approx, nhưng là `5.4` với exact nội suy tuyến tính. Nhóm khác có thể có kết quả khác hoàn toàn.
+Each identifier is trimmed and empty tokens are discarded. Identifiers are not deduplicated and Amazon-issued promotions are not excluded, because the problem asks for the number of promotion identifiers associated with each order.
 
-### 2.2. Đếm mã khuyến mãi theo từng dòng đơn hàng
+### 2.2. Dynamic thresholds
 
-`promotion-ids` là chuỗi có các mã ngăn bằng dấu phẩy. Cách xử lý an toàn:
+The percentile is calculated independently for every `(month, sku)` group rather than once over the full dataset. Therefore, the qualifying condition is:
 
 ```text
-null hoặc "" -> [] -> promotion_count = 0
-"A,B"        -> ["A", "B"] -> 2
+promotion_count(order) >= percentile(month, sku, p)
 ```
 
-Nên `trim` mỗi mã rồi bỏ chuỗi rỗng. Không lọc mã Amazon và không tái sử dụng điều kiện “temporally valid” của Bài 2-1: Bài 2-2 yêu cầu **tất cả** promotion identifiers.
-
-Đề không bảo loại mã lặp trong cùng một ô. Cách bám sát chữ “number of promotion identifiers” là đếm từng mã không rỗng sau khi tách. Nếu bạn dùng `array_distinct`, hãy ghi rõ trong report vì nó thay đổi `promotion_count` khi dữ liệu có mã lặp.
+An approximate and an exact threshold can differ without changing the final qualifying set: promotion counts are integers, so two thresholds can fall between the same adjacent integer values.
 
 ### 2.3. Population standard deviation
 
-Hàm đúng là:
+The final aggregate is:
 
 ```scala
 stddev_pop(col("amount"))
 ```
 
-Ví dụ hai amount `499` và `599` có trung bình `549`; population standard deviation là `50`, còn sample standard deviation xấp xỉ `70.71`.
+Spark ignores null amounts for this aggregate. When fewer than two qualifying orders remain, or when the aggregate is null, the implementation outputs `0.0` as required.
 
-`stddev_pop` bỏ qua `Amount` null. Khi group sau lọc có ít hơn hai đơn, hoặc Spark trả null vì không có amount hợp lệ, xuất `0.0` bằng `when` và `coalesce`.
+### 2.4. Exact-percentile definition
 
-### 2.4. “Exact percentile” phải chốt định nghĩa
-
-Đề không nói công thức exact cụ thể. Một lựa chọn rõ ràng, phổ biến và phù hợp slide tham khảo là **linear interpolation**:
+The exact method uses linear interpolation. Given a group of `N` promotion counts sorted in ascending order as `x[0], ..., x[N-1]`, for percentile `p` it calculates:
 
 ```text
-Cho N giá trị đã sort tăng dần: x[0], ..., x[N-1]
-h = (N - 1) * p
-lo = floor(h), hi = ceil(h)
+h  = (N - 1) * p
+lo = floor(h)
+hi = ceil(h)
 Pp = x[lo] + (h - lo) * (x[hi] - x[lo])
 ```
 
-Với ví dụ 10 giá trị trên, P90 có `h = 8.1`, nên nội suy giữa `x[8] = 5` và `x[9] = 9`, được `5.4`.
+For example, if `h = 8.1`, the percentile is interpolated between positions 8 and 9. This definition can produce a fractional threshold, unlike the approximate result, which is a value selected from the input distribution.
 
-Trong report phải ghi đúng công thức đã chọn. Nếu chọn nearest-rank thay vì nội suy, cũng cần nêu rõ; tuyệt đối không gọi hàm percentile có sẵn rồi đặt tên là “self-implemented exact”.
+## 3. Input preparation
 
-## 3. Thiết kế output nên dùng
+The CSV is read with an explicit nullable-string schema. Only the fields required by this task are projected into the `orders` DataFrame.
 
-Đề chỉ yêu cầu một Parquet cho Bài 2-2. Thiết kế dễ kiểm tra nhất là đưa kết quả của cả hai phương pháp vào cùng file `Task_2-2.parquet`:
-
-| Cột | Kiểu gợi ý | Ý nghĩa |
+| Input column | Converted representation | Purpose |
 |---|---|---|
-| `month` | string | `yyyy-MM` |
-| `sku` | string | SKU của nhóm |
-| `method` | string | `approx` hoặc `exact` |
-| `percentile_level` | string | `P80` hoặc `P90` |
-| `percentile` | double | `0.8` hoặc `0.9` |
-| `promotion_threshold` | double | ngưỡng của nhóm |
-| `qualifying_order_count` | long | số đơn có count >= ngưỡng |
-| `amount_stddev_pop` | double | population standard deviation, hoặc `0.0` |
+| `index` | `Long` (`row_id`) | Deterministic row identifier and tie-breaker |
+| `Date` | `Date`, then `yyyy-MM` | Month grouping key |
+| `SKU` | Trimmed `String` | SKU grouping key |
+| `Amount` | `Double` | Standard-deviation input |
+| `promotion-ids` | Count of non-empty tokens | Percentile input |
 
-Một `(month, sku)` có bốn dòng: approximate/exact x P80/P90. Giữ threshold và số đơn đủ điều kiện để người chấm audit kết quả.
+Rows missing `row_id`, a parsable month, or a non-empty SKU are discarded. Rows with a null `Amount` remain in the percentile branches because the threshold is defined from promotion counts, not amounts.
 
-## 4. Pipeline DataFrame đề xuất
-
-### Bước A - Chuẩn hoá input
-
-Đọc CSV với header và schema rõ ràng, rồi lấy các cột:
+The normalized schema is:
 
 ```text
-index, Date, SKU, Amount, promotion-ids
+row_id: Long
+month: String
+sku: String
+amount: Double
+promotion_count: Long
 ```
 
-Tạo DataFrame `orders` với:
-
-- `row_id`: ép `index` sang `long`, dùng để phân biệt dòng.
-- `order_date`: `to_date(Date, "MM-dd-yy")`.
-- `month`: `date_format(order_date, "yyyy-MM")`.
-- `sku`: `trim(SKU)`.
-- `amount`: ép `Amount` sang `double`.
-- `promotion_count`: số mã không rỗng sau `split` và `trim`.
-
-Chỉ loại bản ghi thiếu `row_id`, `month` hoặc `sku`. Không loại `amount` null trước khi tính percentile, vì percentile là của số promotion, không phải Amount.
-
-Kiểm tra nhanh:
+## 4. DataFrame query decomposition
 
 ```text
-orders.count()
-orders.select(min("promotion_count"), max("promotion_count"))
-orders.groupBy("month", "sku").count()
+Amazon Sale Report.csv
+          |
+          v
+  normalized orders
+          |
+    +-----+-----+
+    |           |
+    v           v
+approximate   exact Window-based
+thresholds    thresholds
+    |           |
+    +-----+-----+
+          |
+          v
+orders joined with each threshold set
+          |
+          v
+filter promotion_count >= threshold
+          |
+          v
+stddev_pop(amount) per method / P80 / P90
+          |
+          v
+Task_2-2.parquet
 ```
 
-### Bước B - Tạo hai mức percentile thành DataFrame nhỏ
+### 4.1. Approximate branch
 
-Đừng copy pipeline P80 rồi sửa thành P90. Tạo một DataFrame hai dòng:
+`orders` is grouped by `(month, sku)`. The query invokes `percentile_approx` once with the array `[0.8, 0.9]` and an accuracy of `10000`. The two returned values are expanded into separate P80 and P90 rows and labelled `method = "approx"`.
+
+The chosen accuracy is higher than the largest observed SKU-month group size, so the approximation parameter is not constrained by a lack of summary capacity for this input. Nevertheless, this branch remains conceptually approximate because it follows Spark's approximate percentile semantics rather than the selected interpolation definition.
+
+### 4.2. Exact branch
+
+The exact branch uses a window partitioned by `(month, sku)` and ordered by:
 
 ```text
-P80, 0.8
-P90, 0.9
+promotion_count ASC, row_id ASC
 ```
 
-Dùng chung DataFrame này trong cả nhánh approximate và exact. Trong Scala có thể dựng bằng `spark.range(1)`, `array`, `struct`, `explode`, `lit`; không cần SQL string.
+`row_number` identifies the sorted position and a partition-level `count` supplies `N`. Each row is cross-joined with a two-row DataFrame containing P80 and P90. The query derives lower and upper positions from `h`, selects the corresponding values with conditional aggregates, and applies the interpolation formula from Section 2.4.
 
-### Bước C - Nhánh approximate
+This branch uses `row_number`, `count`, `floor`, `ceil`, `when`, `max`, `groupBy`, and `crossJoin`; it does not call any built-in exact-percentile function or SQL string.
 
-Gom `orders` theo `(month, sku)` và gọi `percentile_approx` cho hai mức 0.8, 0.9. Nhận mảng hai threshold rồi `explode` thành hai dòng P80/P90.
+### 4.3. Final aggregation
 
-Pseudo-code:
+Both threshold tables use the same downstream logic:
 
-```scala
-approxThresholds = orders
-  .groupBy("month", "sku")
-  .agg(percentile_approx(
-    col("promotion_count"),
-    array(lit(0.8), lit(0.9)),
-    lit(10000)
-  ))
-  // đổi mảng threshold thành các dòng P80/P90
-  .withColumn("method", lit("approx"))
-```
+1. Join thresholds to `orders` by `(month, sku)`.
+2. Keep orders where `promotion_count >= promotion_threshold`.
+3. Group by month, SKU, method, percentile level, percentile value, and threshold.
+4. Calculate `qualifying_order_count` and `stddev_pop(amount)`.
+5. Replace a standard deviation for a group with fewer than two qualifying orders by `0.0`.
 
-`accuracy` là đánh đổi tốc độ/bộ nhớ và độ chính xác. Chọn một giá trị cố định (ví dụ `10000`) và ghi nó trong report. Không gọi kết quả này là exact, kể cả khi dataset nhỏ làm nó trùng exact.
+The approximate and exact result DataFrames are combined with `unionByName` and sorted by month, SKU, method, and percentile level.
 
-### Bước D - Nhánh exact tự cài đặt bằng Window
+## 5. Structured API compliance and execution plan
 
-Đây là phần quan trọng nhất. Dùng window partition theo `(month, sku)`, sort tăng dần `promotion_count`, rồi thêm `row_number` và số phần tử nhóm `N`.
+The implementation uses only Spark's DataFrame API, including `select`, `filter`, `split`, `transform`, `groupBy`, `percentile_approx`, `row_number`, `count`, `crossJoin`, `join`, `stddev_pop`, `unionByName`, and `orderBy`. No call to `spark.sql(...)` or SQL expression string is used.
 
-```text
-Window partition: (month, sku)
-Window order: promotion_count ASC, row_id ASC
-```
+`Task22App` prints `result.explain(extended = true)` before the Parquet write. The recorded physical plan shows the expected hash-partition exchanges on `(month, sku)` for grouped percentile calculation and window ordering. It also shows a small broadcast nested-loop cross join for the two percentile levels and broadcast hash joins when the threshold relations are combined with order rows. The two-level percentile DataFrame is constant-size, so broadcasting it avoids an unnecessary large shuffle.
 
-`row_id` ở cuối thứ tự giúp chạy lặp lại ổn định. Khi `promotion_count` bằng nhau, thay đổi thứ tự không đổi giá trị percentile.
+## 6. Single-file Parquet export
 
-Với mỗi mức `p`:
+Spark normally writes a directory containing `part-*` files. The shared `SingleParquetExporter` produces the required single local Parquet file by:
 
-1. Gắn `p` vào từng dòng qua cross join với DataFrame hai percentile.
-2. Tính `h = (N - 1) * p`, `lo = floor(h)`, `hi = ceil(h)`.
-3. Lấy `x_lo` tại `row_number = lo + 1`; lấy `x_hi` tại `row_number = hi + 1`.
-4. Group lại theo `(month, sku, percentile_level, p)` để có đúng một dòng threshold.
-5. Tính `x_lo + (h - lo) * (x_hi - x_lo)`.
-6. Thêm `method = "exact"`.
+1. Writing `coalesce(1)` output to a unique temporary directory.
+2. Finding the single `part-*.parquet` file.
+3. Moving that part file to the requested target path.
+4. Removing the temporary directory.
 
-Chỉ dùng `row_number`, `count`, `floor`, `ceil`, `when`, `max`, `groupBy`, `join`... Đây đều là DataFrame API. Không gọi `percentile`, `percentile_approx`, `collect` hay Scala collection để né phần exact tự cài đặt.
+The exporter refuses to overwrite an existing output path. This prevents accidental replacement of a previous result and explains why a rerun must use a new output name or remove/archive the prior output first.
 
-### Bước E - Dùng threshold để tính standard deviation
+## 7. Output schema
 
-Viết một hàm nhận `thresholds` (approx hoặc exact) và trả schema chung:
+The final file is `outputs/Task_2-2.parquet`.
 
-1. Join `orders` với `thresholds` theo `(month, sku)`.
-2. Giữ các dòng `promotion_count >= promotion_threshold`.
-3. Group theo `(month, sku, method, percentile_level, percentile, promotion_threshold)`.
-4. Tính `count(lit(1))` thành `qualifying_order_count` và `stddev_pop(amount)`.
-5. Nếu `qualifying_order_count < 2`, đặt deviation bằng `0.0`; với null còn lại cũng `coalesce` về `0.0`.
+| Column | Type | Description |
+|---|---|---|
+| `month` | String | Group month in `yyyy-MM` format |
+| `sku` | String | Group SKU |
+| `method` | String | `approx` or `exact` |
+| `percentile_level` | String | `P80` or `P90` |
+| `percentile` | Double | `0.8` or `0.9` |
+| `promotion_threshold` | Double | Calculated threshold for the group |
+| `qualifying_order_count` | Long | Number of retained order rows |
+| `amount_stddev_pop` | Double | Population standard deviation of retained amounts |
 
-Sau đó `unionByName` kết quả approximate và exact, rồi `orderBy(month, sku, method, percentile_level)`.
+Every `(month, sku)` group has four result rows: approximate/exact x P80/P90. Retaining thresholds and qualifying counts makes the computation auditable.
 
-## 5. Pseudo-code tổng thể
+## 8. Experimental results
 
-```text
-raw
-  -> orders(month, sku, amount, promotion_count)
-  -> approx_thresholds(month, sku, P80/P90, threshold)
-  -> exact_thresholds(month, sku, P80/P90, threshold)
+The task was evaluated on the provided Amazon Sale Report dataset using Spark 3.5.9 in `local[*]` mode.
 
-orders JOIN approx_thresholds
-  -> filter promotion_count >= threshold
-  -> groupBy -> stddev_pop
-  -> approx_result
+| Metric | Observed value |
+|---|---:|
+| Normalized input orders | 128,975 |
+| SKU-month groups | 16,486 |
+| Largest SKU-month group | 426 orders |
+| Result rows | 65,944 |
+| Result rows per SKU-month group | 4 |
+| Null cells in exported result | 0 |
+| Negative standard deviations | 0 |
 
-orders JOIN exact_thresholds
-  -> filter promotion_count >= threshold
-  -> groupBy -> stddev_pop
-  -> exact_result
+The largest group contains 426 orders, below the assignment's 1,000-order threshold. Manual repartitioning was therefore not introduced: the largest group is far below Spark's typical 128 MB partition target, and an additional repartition would add an avoidable shuffle without addressing a measured skew problem.
 
-approx_result UNION BY NAME exact_result
-  -> coalesce(1)
-  -> ghi một file Task_2-2.parquet
-```
+### 8.1. Approximate versus exact comparison
 
-## 6. Kiểm tra tính đúng
+The two output branches were joined by `(month, sku, percentile_level)`, producing 32,972 comparisons.
 
-Nên đặt các kiểm tra sau trong lúc phát triển:
+| Comparison metric | Observed value |
+|---|---:|
+| Thresholds that differ | 13,221 |
+| Mean absolute threshold difference | 0.982970399127 |
+| Maximum absolute threshold difference | 23.2 |
+| Different qualifying `row_id` sets | 1,307 |
+| Different population standard deviations | 528 |
+| Maximum absolute standard-deviation difference | 701.5 |
 
-1. Không có `promotion_count < 0`.
-2. Mỗi `method` có đúng hai dòng (P80/P90) trên mỗi `(month, sku)`.
-3. Không có `amount_stddev_pop` null hoặc âm.
-4. `qualifying_order_count` phải dương, vì threshold được lấy từ chính nhóm.
-5. Nhóm chỉ có một order phải có deviation `0.0` ở cả P80 và P90.
-6. Chọn một nhóm nhỏ, in `promotion_count` đã sort rồi tính tay để đối chiếu threshold.
-7. Đọc lại Parquet bằng Spark local mode; kiểm tra schema, số dòng và vài dòng đầu. Không dùng `getmerge` cho Parquet.
+By percentile level:
 
-## 7. Phần report bắt buộc
+| Level | Thresholds different | Qualifying sets different | Standard deviations different |
+|---|---:|---:|---:|
+| P80 | 6,053 | 1,002 | 403 |
+| P90 | 7,168 | 305 | 125 |
 
-### 7.1. So sánh exact và approximate
+One representative P80 group is `(2022-05, "SET397-KR-NP  -M")`:
 
-Join hai bảng result theo `(month, sku, percentile_level)`, rồi report:
+| Method | Threshold | Qualifying orders | Population standard deviation |
+|---|---:|---:|---:|
+| Approximate | 1.0 | 62 | 135.610944 |
+| Exact | 2.2 | 17 | 235.058824 |
 
-- số nhóm có `exact_threshold != approx_threshold`;
-- sai khác tuyệt đối lớn nhất và trung bình của threshold;
-- số nhóm có tập qualifying khác nhau (tốt nhất so tập `row_id`, tối thiểu so `qualifying_order_count`);
-- số nhóm có `amount_stddev_pop` khác nhau;
-- vài ví dụ khác biệt dễ hiểu.
+This example demonstrates that an approximate threshold can select a substantially different set when it crosses an integer promotion-count boundary.
 
-Threshold khác không tự động có nghĩa đáp số cuối khác: `promotion_count` là số nguyên và thường có nhiều giá trị trùng.
+### 8.2. Benchmark
 
-### 7.2. Benchmark
+One warm-up action was excluded before measuring five `count()` actions for each branch. The actions used the same cached normalized input and Spark configuration.
 
-Đề yêu cầu ít nhất 5 lần chạy và report phải có mean cùng standard deviation thời gian.
+| Method | Five measured runs (ms) | Mean (ms) | Population standard deviation (ms) |
+|---|---|---:|---:|
+| Approximate | 2239.36, 1998.31, 1519.73, 1735.24, 1352.21 | 1768.97 | 319.63 |
+| Exact | 1968.50, 1601.49, 1601.32, 1359.37, 1239.17 | 1553.97 | 250.32 |
 
-1. Dùng cùng input, Spark config và số partition cho cả hai cách.
-2. Đo action thật (`count`, ghi tạm, hoặc action tương đương), không đo chuỗi transformation lazy.
-3. Có thể warm-up một lần riêng, sau đó mới đo 5 lần.
-4. Ghi từng thời gian, mean, standard deviation.
-5. Nếu chạy cả hai cách trong một job, phải có action tách để thời gian không lẫn nhau.
+These measurements are specific to the provided dataset and local execution environment. They should not be generalized to larger or differently distributed inputs.
 
-### 7.3. Câu hỏi repartition
+### 8.3. Parquet read-back verification
 
-Đo nhóm lớn nhất trước:
+The exported file was successfully read by Pandas with the PyArrow engine. It contains 65,944 rows and the eight-column schema in Section 7, with both methods and both percentile levels present. There are no duplicate `(month, sku, method, percentile_level)` keys, no null output cells, and exactly four result rows per SKU-month group.
 
-```text
-orders.groupBy(month, sku).count().agg(max(count))
-```
+## 9. Implementation structure
 
-Chỉ khi có nhóm lớn hơn 1.000 orders mới phải thảo luận cụ thể về manual repartition. Nếu không có, report vẫn phải ghi số đo và giải thích vì sao không repartition thủ công. So sánh dung lượng nhóm lớn nhất với partition mặc định khoảng 128 MB; không thêm `repartition` chỉ vì “có vẻ nhanh hơn”.
+| File | Responsibility |
+|---|---|
+| `Task22Config.scala` | Input schema, column names, date pattern, percentile accuracy, and benchmark minimum |
+| `Task22Query.scala` | Normalization, approximate branch, exact Window-based branch, and final standard-deviation calculation |
+| `Task22App.scala` | Spark entry point, benchmarking, execution-plan output, group-size measurement, and export coordination |
+| `SingleParquetExporter.scala` | Shared Task 2-1 helper that exports exactly one local Parquet file |
+| `build.sbt` | Registers the Task 2-2 source directory and Spark SQL dependency |
 
-## 8. File nên tạo khi tự code
+## 10. Conclusion
 
-```text
-src/Task_2-2/
-  Task22Config.scala
-  Task22Query.scala
-  Task22App.scala
-  SingleParquetExporter.scala  # có thể tái sử dụng helper của 2-1
+Task 2-2 is implemented as two fully DataFrame-based pipelines over the same normalized order records. The approximate branch uses Spark's `percentile_approx`; the exact branch independently derives P80 and P90 through ordered Window operations and linear interpolation.
 
-outputs/
-  Task_2-2.parquet
-```
-
-Thứ tự làm hợp lý: chuẩn hoá input -> approximate -> kiểm nhóm nhỏ -> exact -> so sánh -> xuất Parquet -> benchmark -> viết report.
-
-### Lệnh chạy sau khi build
-
-Entry point đã được cài đặt là task22.Task22App. Tham số thứ ba là số lượt benchmark và không được nhỏ hơn 5.
-
-~~~bash
-spark-submit \
-  --master 'local[*]' \
-  --conf 'spark.hadoop.fs.defaultFS=file:///' \
-  --class task22.Task22App \
-  "$JAR_PATH" \
-  "./data/Amazon Sale Report.csv" \
-  "./outputs/Task_2-2.parquet" \
-  5 2>&1 | tee "./outputs/task22-run.log"
-~~~
-
-Đường dẫn output phải chưa tồn tại. Log sẽ chứa năm mẫu benchmark cho mỗi phương pháp, mean, population standard deviation, kích thước nhóm SKU-tháng lớn nhất và explain(true).
-
-## 9. Checklist trước khi nộp
-
-- [ ] Scala + Spark DataFrame/Dataset API, không SQL string.
-- [ ] Có cả P80 và P90.
-- [ ] Có `percentile_approx` và exact percentile tự cài đặt.
-- [ ] Exact percentile có công thức ghi rõ trong report.
-- [ ] Dùng `stddev_pop`; group < 2 đơn cho `0.0`.
-- [ ] Có phân tích khác biệt, benchmark >= 5 run, mean và standard deviation.
-- [ ] Có kết luận về nhóm > 1.000 order và repartition.
-- [ ] Xuất đúng một file `Task_2-2.parquet`, đọc lại được bằng Spark/Pandas.
-- [ ] Bổ sung Bài 2-2 vào `Report.pdf` và cấu trúc ZIP cuối cùng.
+The result is a single auditable Parquet file with both methods, their thresholds, qualifying-order counts, and population standard deviations. The measured comparison confirms that threshold differences are common, but only a subset changes the qualifying orders or final standard deviation. The largest observed group does not justify manual repartitioning for this dataset.

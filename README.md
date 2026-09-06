@@ -25,11 +25,13 @@ mr-spark/
 │   └── task_ideas/
 │       ├── Task_1-1.md
 │       ├── Task_1-2.md
-│       └── Task_2-1.md
+│       ├── Task_2-1.md
+│       └── Task_2-2.md
 ├── src/
 │   ├── Task_1-1/
 │   ├── Task_1-2/
-│   └── Task_2-1/
+│   ├── Task_2-1/
+│   └── Task_2-2/
 └── outputs/
 ```
 
@@ -64,6 +66,15 @@ Task 2-1 uses Spark Structured APIs to:
 4. Calculate the qualifying percentage for every city.
 
 The program prints `explain(true)`, records the executed Spark stage IDs, and exports the final result as one local Parquet file.
+
+### Task 2-2
+
+Task 2-2 uses Spark Structured APIs to calculate dynamic P80 and P90 promotion-count thresholds for every `(month, SKU)` group using two methods:
+
+1. Spark's `percentile_approx` aggregate.
+2. A self-implemented exact percentile based on Window ordering and linear interpolation.
+
+For each method and percentile level, qualifying orders are used to calculate `stddev_pop(Amount)`. The final result, including both thresholds and qualifying-order counts, is exported as one local Parquet file.
 
 ## Required environment
 
@@ -282,7 +293,7 @@ target/out/jvm/scala-2.12.18/lab03-mr-spark/
 lab03-mr-spark-assembly-0.1.0-SNAPSHOT.jar
 ```
 
-The warning about multiple main classes is expected because Task 1-1, Task 1-2, and Task 2-1 have different entry points. Each run command explicitly supplies the required main class.
+The warning about multiple main classes is expected because Task 1-1, Task 1-2, Task 2-1, and Task 2-2 have different entry points. Each run command explicitly supplies the required main class.
 
 Set reusable paths after building:
 
@@ -418,6 +429,43 @@ Exit Spark Shell with:
 :quit
 ```
 
+## Run Task 2-2
+
+Task 2-2 runs Spark in local mode and reads the CSV from the normal local filesystem. As with Task 2-1, explicitly override Hadoop's default filesystem setting.
+
+```bash
+spark-submit \
+  --master 'local[*]' \
+  --conf 'spark.hadoop.fs.defaultFS=file:///' \
+  --class task22.Task22App \
+  "$JAR_PATH" \
+  "./data/Amazon Sale Report.csv" \
+  "./outputs/Task_2-2.parquet" \
+  5 2>&1 | tee "./outputs/task22-run.log"
+```
+
+The output path must not already exist. The log records the five benchmark samples for each percentile method, the largest SKU-month group size, and the extended execution plan.
+
+Expected output filename:
+
+```text
+outputs/Task_2-2.parquet
+```
+
+### Inspect the Parquet output
+
+Use the same Spark Shell setup as Task 2-1, then run:
+
+```scala
+val result = spark.read.parquet(
+  "file:///absolute/path/to/Lab03/outputs/Task_2-2.parquet"
+)
+
+result.printSchema()
+println(result.count())
+result.show(20, truncate = false)
+```
+
 ## Tested results
 
 The completed local run produced:
@@ -430,8 +478,12 @@ The completed local run produced:
 | Task 2-1 physical joins     | Three`BroadcastHashJoin` operators                |
 | Task 2-1 Exchange operators | Six shuffle exchanges and three broadcast exchanges |
 | Task 2-1 completed stages   | 11                                                  |
+| Task 2-2                    | 65,944 result rows in one Parquet file              |
+| Task 2-2 SKU-month groups   | 16,486; largest group contains 426 orders           |
 
 Task 2-1 returns zero qualifying orders for the provided dataset because all Cancelled/Standard records have empty promotion lists. The report in `docs/task_ideas/Task_2-1.md` explains this result and the percentage-denominator assumption.
+
+Task 2-2 returns four auditable rows per SKU-month group: approximate/exact x P80/P90. Its measured comparison, percentile definition, and Parquet verification are documented in `docs/task_ideas/Task_2-2.md`.
 
 ## Reports
 
@@ -440,3 +492,4 @@ Detailed design and execution analysis are available in:
 - `docs/task_ideas/Task_1-1.md`
 - `docs/task_ideas/Task_1-2.md`
 - `docs/task_ideas/Task_2-1.md`
+- `docs/task_ideas/Task_2-2.md`
