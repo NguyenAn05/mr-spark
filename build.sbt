@@ -8,6 +8,7 @@ lazy val root = (project in file("."))
     Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "Task_1-1",
     Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "Task_1-2",
     Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "Task_2-1",
+    Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "Task_2-2",
     Compile / run / fork := true,
     Compile / console / scalacOptions --= Seq("-Xfatal-warnings"),
     libraryDependencies ++= Seq(

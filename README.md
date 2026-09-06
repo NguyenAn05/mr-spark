@@ -1,10 +1,11 @@
 # Lab 03 — Advanced MapReduce and Spark Structured APIs
 
-This repository contains Scala implementations for three problems from the Introduction to Big Data Analysis lab:
+This repository contains Scala implementations for four problems from the Introduction to Big Data Analysis lab:
 
 - **Task 1-1:** a dynamic-length sliding-window computation implemented with Hadoop MapReduce.
 - **Task 1-2:** a conditionally filtered median aggregation implemented with Hadoop Secondary Sort.
 - **Task 2-1:** a city-level cancellation-percentage query implemented exclusively with Spark's DataFrame API.
+- **Task 2-2:** exact and approximate dynamic percentile computations implemented exclusively with Spark's DataFrame API.
 
 The implementations use Scala 2.12.18, Hadoop 3.5.0, Spark 3.5.9, Java 17, and sbt.
 
